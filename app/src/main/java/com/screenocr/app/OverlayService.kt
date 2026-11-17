@@ -26,17 +26,20 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
+import android.text.InputType
 import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.WindowManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.widget.doAfterTextChanged
 import java.util.concurrent.Executors
 import kotlin.math.abs
 
@@ -78,6 +81,7 @@ class OverlayService : Service() {
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var menu: LinearLayout? = null
     private var selector: View? = null
+    private var panel: View? = null
     private var busy = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -284,21 +288,146 @@ class OverlayService : Service() {
             text.isBlank() -> toast("No text found")
             else -> {
                 if (Prefs.autoCopy(this)) {
-                    val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("OCR text", text))
+                    copyToClipboard(text)
                     toast("Copied to clipboard")
                 }
-                startActivity(
-                    Intent(this, ResultActivity::class.java)
-                        .putExtra(ResultActivity.EXTRA_TEXT, text)
-                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                )
+                // Shown as an overlay panel: phones like Vivo/OriginOS block background
+                // services from opening a new activity, but overlay windows always work.
+                showResultPanel(text)
             }
         }
     }
 
+    private fun copyToClipboard(value: String) {
+        val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("OCR text", value))
+    }
+
     private fun toast(msg: String) {
         Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show()
+    }
+
+    // ------------------------------------------------------------------ UI: result panel
+
+    private fun showResultPanel(result: String) {
+        removePanel()
+        bubbleRoot?.visibility = View.INVISIBLE
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(16).toFloat()
+                setColor(Color.WHITE)
+                setStroke(dp(1), 0xFFBBBBBB.toInt())
+            }
+        }
+
+        val title = TextView(this).apply {
+            text = "Extracted text"
+            setTextColor(Color.BLACK)
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+        }
+        val stats = TextView(this).apply {
+            setTextColor(0xFF666666.toInt())
+            textSize = 12f
+        }
+        val edit = EditText(this).apply {
+            setText(result)
+            setTextColor(Color.BLACK)
+            textSize = 18f
+            gravity = Gravity.TOP or Gravity.START
+            textDirection = View.TEXT_DIRECTION_FIRST_STRONG
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 6
+            maxLines = 12
+            isVerticalScrollBarEnabled = true
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+            background = GradientDrawable().apply {
+                cornerRadius = dp(10).toFloat()
+                setColor(0xFFF1F3F5.toInt())
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) }
+        }
+
+        fun refreshStats() {
+            val s = TextAnalyzer.stats(edit.text.toString())
+            stats.text = "${s.words} words · ${s.chars} characters · ${s.lines} lines · ${s.script}"
+        }
+        edit.doAfterTextChanged { refreshStats() }
+        refreshStats()
+
+        fun button(label: String, bg: Int, fg: Int, onClick: () -> Unit): TextView {
+            return TextView(this).apply {
+                text = label
+                gravity = Gravity.CENTER
+                setTextColor(fg)
+                textSize = 15f
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(dp(8), dp(12), dp(8), dp(12))
+                background = GradientDrawable().apply {
+                    cornerRadius = dp(12).toFloat()
+                    setColor(bg)
+                }
+                layoutParams = LinearLayout.LayoutParams(
+                    0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f
+                ).apply {
+                    marginStart = dp(3)
+                    marginEnd = dp(3)
+                }
+                setOnClickListener { onClick() }
+            }
+        }
+
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(10) }
+        }
+        row.addView(button("Copy", 0xFF3B5BDB.toInt(), Color.WHITE) {
+            copyToClipboard(edit.text.toString())
+            toast("Copied to clipboard")
+        })
+        row.addView(button("Join lines", 0xFFE7EAF3.toInt(), Color.BLACK) {
+            edit.setText(TextAnalyzer.reflow(edit.text.toString()))
+        })
+        row.addView(button("Close", 0xFFE7EAF3.toInt(), Color.BLACK) { removePanel() })
+
+        root.addView(title)
+        root.addView(stats)
+        root.addView(edit)
+        root.addView(row)
+
+        // Focusable on purpose (no FLAG_NOT_FOCUSABLE) so the keyboard works for editing.
+        val params = WindowManager.LayoutParams(
+            (screenInfo().first * 0.94f).toInt(),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            y = dp(70)
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+        wm.addView(root, params)
+        panel = root
+    }
+
+    private fun removePanel() {
+        panel?.let {
+            try {
+                wm.removeView(it)
+            } catch (e: Exception) {
+                // already removed
+            }
+        }
+        panel = null
+        bubbleRoot?.visibility = View.VISIBLE
     }
 
     // ------------------------------------------------------------------ UI: floating bubble
@@ -541,6 +670,7 @@ class OverlayService : Service() {
     override fun onDestroy() {
         running = false
         removeSelector()
+        removePanel()
         bubbleRoot?.let {
             try {
                 wm.removeView(it)
