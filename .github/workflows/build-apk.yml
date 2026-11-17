@@ -5,9 +5,9 @@
 {"uses": "actions/checkout@v4"},
 {"uses": "actions/setup-java@v5", "with": {"distribution": "temurin", "java-version": "17"}},
 {"name": "Install Android SDK", "uses": "android-actions/setup-android@v3", "with": {"packages": "platform-tools platforms;android-34 build-tools;34.0.0"}},
-{"name": "Download OCR language data", "run": "mkdir -p app/src/main/assets/tessdata && curl -sSfL -o app/src/main/assets/tessdata/eng.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata && curl -sSfL -o app/src/main/assets/tessdata/urd.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/urd.traineddata"},
+{"name": "Download OCR language data", "run": "mkdir -p app/src/main/assets/tessdata && curl -sSfL -o app/src/main/assets/tessdata/eng.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/eng.traineddata && curl -sSfL -o app/src/main/assets/tessdata/urd.traineddata https://raw.githubusercontent.com/tesseract-ocr/tessdata_best/main/urd.traineddata || { echo '::error::DOWNLOAD OF OCR LANGUAGE DATA FAILED'; exit 1; }"},
 {"uses": "gradle/actions/setup-gradle@v4", "with": {"gradle-version": "8.7"}},
-{"name": "Build debug APK", "run": "gradle assembleDebug --no-daemon --stacktrace"},
+{"name": "Build debug APK", "run": "gradle assembleDebug --no-daemon --stacktrace > build.log 2>&1 || { grep -E 'What went wrong|error:|^e: |Could not|not found|FAILED|Caused by' build.log | head -10 | sed 's/^/::error::/'; exit 1; }"},
 {"uses": "actions/upload-artifact@v4", "with": {"name": "ScreenOCR-apk", "path": "app/build/outputs/apk/debug/app-debug.apk"}}
 ]}}
 }
